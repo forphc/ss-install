@@ -1,0 +1,81 @@
+#!/bin/bash
+
+[[ $(whoami) != root ]] && echo "This script needs to be run as root, exiting..." && exit 1
+
+export DEBIAN_FRONTEND=noninteractive
+ARCH=$(dpkg --print-architecture)
+OS_1=$(grep "^ID=" /etc/os-release | cut -d= -f2 | sed 's/"//g')
+OS_2=$(echo "ubuntu debian" | grep -o "$OS_1")
+VER_1=$(grep "^VERSION_CODENAME=" /etc/os-release | cut -d= -f2)
+VER_2=$(echo "stretch buster bullseye xenial bionic focal" | grep -o "$VER_1")
+V2RAYtarfile=$(wget -qO - https://api.github.com/repos/shadowsocks/v2ray-plugin/releases/latest | grep linux-"${ARCH}" | grep name | cut -f4 -d\")
+XRAYtarfile=$(wget -qO - https://api.github.com/repos/teddysun/xray-plugin/releases/latest | grep linux-"${ARCH}" | grep name | cut -f4 -d\")
+DLINK_V2RAY=$(wget -qO - https://api.github.com/repos/shadowsocks/v2ray-plugin/releases/latest | grep linux-"${ARCH}" | grep browser_download_url | cut -f4 -d\")
+DLINK_XRAY=$(wget -qO - https://api.github.com/repos/teddysun/xray-plugin/releases/latest | grep linux-"${ARCH}" | grep browser_download_url | cut -f4 -d\")
+RAWLINK="https://raw.githubusercontent.com/forphc/ss-install/main/"
+
+get_utilities() {
+	wget -qO /usr/local/sbin/main-ss "${RAWLINK}/main-ss"
+	wget -qO /usr/local/sbin/create-ss "${RAWLINK}/create-ss"
+	wget -qO /usr/local/sbin/delete-ss "${RAWLINK}/delete-ss"
+	wget -qO /usr/local/sbin/optimize-ss "${RAWLINK}/optimize-ss"
+	chmod -R 755 /usr/local/sbin/
+}
+
+get_acme() {
+	curl https://get.acme.sh | sh
+	/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+}
+
+install_XRAYplugin() {
+	wget -q "$DLINK_XRAY"
+	tar xf "$XRAYtarfile"
+	mv xray-plugin_linux_"${ARCH}" /usr/local/bin/xray-plugin
+	rm -f "$XRAYtarfile"
+}
+
+install_V2RAYplugin() {
+	wget -q "$DLINK_V2RAY"
+	tar xf "$V2RAYtarfile"
+	mv v2ray-plugin_linux_"${ARCH}" /usr/local/bin/v2ray-plugin
+	rm -f "$V2RAYtarfile"
+}
+
+build_ss() {
+	git clone https://github.com/shadowsocks/shadowsocks-libev.git
+	cd ~/shadowsocks-libev || exit 1
+	git submodule update --init
+	./autogen.sh
+	./configure
+	make
+	make install
+	cd ~ || exit 1
+	rm -rf ~/shadowsocks-libev
+}
+
+install_dep() {
+	apt-get update --fix-missing
+	apt-get upgrade -y
+	apt-get install -y --no-install-recommends build-essential autoconf libtool \
+		libssl-dev gawk debhelper init-system-helpers pkg-config asciidoc \
+		xmlto apg libpcre3-dev zlib1g-dev libev-dev libudns-dev libsodium-dev libmbedtls-dev libc-ares-dev automake \
+		curl net-tools zip unzip git socat qrencode
+	[[ $VER_1 != bullseye ]] && apt-get install -y dh-systemd
+}
+
+[[ $OS_1 != "$OS_2" ]] && echo "OS distro not supported by this script, exiting..." && exit 1
+[[ $VER_1 != "$VER_2" ]] && echo "OS version not supported by this script, exiting..." && exit 1
+[[ $(command -v ss-server) ]] && echo "Shadowsocks already installed, exiting..." && exit 1
+[[ -z $V2RAYtarfile ]] && echo "Can't get v2ray-plugin file, exiting..." && exit 1
+[[ -z $XRAYtarfile ]] && echo "Can't get xray-plugin file, exiting..." && exit 1
+
+install_dep
+build_ss
+install_V2RAYplugin
+install_XRAYplugin
+get_acme
+get_utilities
+clear
+echo ''
+echo "Installation complete"
+echo -e "Create and manage accounts with the command → \033[1;32mmain-ss\033[0m"
