@@ -1,0 +1,232 @@
+#!/bin/bash
+
+PUBLIC_IP=$(wget -4qO - api.ipify.org)
+SS_CONFIG_DIR="/etc/shadowsocks-libev"
+
+_prompt() {
+	unset input
+	until ((input >= 1 && input <= "$_choices")); do
+		read -rp " Choose number: " input
+	done
+}
+
+create_systemd() {
+	SS_DEAMON="/lib/systemd/system/shadowsocks-${1}.service"
+	[[ -e ${SS_DEAMON} ]] && rm -f "$SS_DEAMON"
+	cat >> "$SS_DEAMON" << END
+[Unit]
+Description=Shadowsocks-libev Server Service
+After=network.target
+[Service]
+ExecStart=/usr/local/bin/ss-server -c /etc/shadowsocks-libev/${1}.json
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+END
+}
+
+issue_cert() {
+	/root/.acme.sh/acme.sh --issue --standalone -d "$DOMAIN" --log
+	if [[ $? -ne 0 ]]; then
+		echo "*Failed to issue certificate, aborting... "
+		echo " *Make sure ports 80 and 443 are open"
+		echo " *Also point your domain to this server (create DNS A record)"
+		read -n 1 -s -r -p "Press any key to end"
+		clear
+		exit 1
+	fi
+}
+
+ask_domain() {
+	while :; do
+		read -rp " Enter domain: " DOMAIN
+		validate="^([a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$"
+		if [[ "$DOMAIN" =~ $validate ]]; then
+			break
+		else
+			echo " *Invalid domain"
+		fi
+	done
+}
+
+ask_mode() {
+	echo " Which transport mode?"
+	cat << EOF
+ 1) Shadowsocks over websocket (HTTP) [ws-http]
+ 2) Shadowsocks over websocket (HTTPS) [ws-tls]
+EOF
+	_choices=2
+	_prompt
+	case $input in
+		1)
+			TLS="no"
+			;;
+		2)
+			TLS="yes"
+			;;
+	esac
+}
+
+ask_aead_chipers() {
+	echo " Which AEAD chiper do you want to use?"
+	cat << EOF
+ 1) aes-128-gcm
+ 2) aes-256-gcm
+ 3) chacha20-ietf-poly1305
+EOF
+	_choices=3
+	_prompt
+	case $input in
+		1)
+			AEAD="aes-128-gcm"
+			;;
+		2)
+			AEAD="aes-256-gcm"
+			;;
+		3)
+			AEAD="chacha20-ietf-poly1305"
+			;;
+	esac
+}
+
+ask_plugin() {
+	echo " Which plugin do you want to use?"
+	cat << EOF
+ 1) v2ray-plugin
+ 2) xray-plugin
+ 3) Do not use plugin
+EOF
+	_choices=3
+	_prompt
+	case $input in
+		1)
+			PLUGIN="v2ray-plugin"
+			;;
+		2)
+			PLUGIN="xray-plugin"
+			;;
+		3)
+			PLUGIN="no"
+			;;
+	esac
+}
+
+ask_port() {
+	while :; do
+		read -rp " Enter port number: " PORT
+		if ! [[ $PORT =~ ^[0-9]+$ ]]; then
+			echo " *Please enter valid number"
+			continue
+		fi
+		if [[ $(ss -tulpn | awk '{print $5}' | rev | cut -d: -f1 | rev | tail -n +2 | grep -wc "$PORT") -ne 0 ]]; then
+			echo " *Port already in use"
+			continue
+		fi
+		if ((PORT >= 1 && PORT <= 65535)); then
+			break
+		else
+			echo -e " *Out of valid ports range. Please choose between 1 and 65535 only"
+		fi
+	done
+
+}
+
+ask_pass() {
+	read -rp " Enter password(leave blank for random): " SS_PASSWD
+	[[ -z ${SS_PASSWD} ]] && SS_PASSWD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+}
+
+ask_username() {
+	while :; do
+		read -rp " Enter Username: " USERNAME
+		if ! [[ $USERNAME =~ ^[[:alnum:]]+$ ]]; then
+			echo " *Please use letters and numbers only."
+			continue
+		fi
+		if [[ $(find ${SS_CONFIG_DIR} -name "${USERNAME}.json" | cut -d"/" -f4 | cut -d"." -f1) = "$USERNAME" ]]; then
+			echo " *Username already taken"
+		else
+			break
+		fi
+	done
+}
+
+clear
+echo ''
+[[ ! -d ${SS_CONFIG_DIR} ]] && mkdir ${SS_CONFIG_DIR}
+ask_username
+ask_pass
+ask_port
+ask_plugin
+ask_aead_chipers
+if [[ $PLUGIN != no ]]; then
+	ask_mode
+fi
+if [[ $TLS = yes ]]; then
+	ask_domain
+	issue_cert
+	cat >> "$SS_CONFIG_DIR"/"$USERNAME".json << END
+{
+	"server":"0.0.0.0",
+	"server_port":${PORT},
+	"password":"$SS_PASSWD",
+	"timeout":300,
+	"method":"$AEAD",
+	"nameserver":"8.8.8.8",
+	"fast_open":true,
+	"no_delay":true,
+	"plugin":"$PLUGIN",
+	"plugin_opts":"server;tls;host=${DOMAIN};cert=/root/.acme.sh/${DOMAIN}/fullchain.cer;key=/root/.acme.sh/${DOMAIN}/${DOMAIN}.key;loglevel=none"
+}
+END
+	echo "ss://$(echo -n "${AEAD}:${SS_PASSWD}" | base64 | tr '/+' '_-' | tr -d '=')@${PUBLIC_IP}:${PORT}?plugin=${PLUGIN}%3Bhost%3D${DOMAIN}%3Btls#${USERNAME}" > ss_client.txt
+	qrencode -m 2 -l L -t UTF8 < ss_client.txt > ss_client.PNG
+elif [[ $TLS = no ]]; then
+	cat >> "$SS_CONFIG_DIR"/"$USERNAME".json << END
+{
+	"server":"0.0.0.0",
+	"server_port":${PORT},
+	"password":"$SS_PASSWD",
+	"timeout":300,
+	"method":"$AEAD",
+	"nameserver":"8.8.8.8",
+	"fast_open":true,
+	"no_delay":true,
+	"plugin":"$PLUGIN",
+	"plugin_opts":"server;loglevel=none"
+}
+END
+	echo "ss://$(echo -n "${AEAD}:${SS_PASSWD}" | base64 | tr '/+' '_-' | tr -d '=')@${PUBLIC_IP}:${PORT}?plugin=${PLUGIN}#${USERNAME}" > ss_client.txt
+	qrencode -m 2 -l L -t UTF8 < ss_client.txt > ss_client.PNG
+else
+	cat >> "$SS_CONFIG_DIR"/"$USERNAME".json << END
+{
+	"server":"0.0.0.0",
+	"server_port":${PORT},
+	"password":"$SS_PASSWD",
+	"timeout":300,
+	"method":"$AEAD",
+	"nameserver":"8.8.8.8",
+	"fast_open":true,
+	"no_delay":true,
+}
+END
+	echo "ss://$(echo -n "${AEAD}:${SS_PASSWD}" | base64 | tr '/+' '_-' | tr -d '=')@${PUBLIC_IP}:${PORT}#${USERNAME}" > ss_client.txt
+	qrencode -m 2 -l L -t UTF8 < ss_client.txt > ss_client.PNG
+fi
+
+create_systemd "$USERNAME"
+systemctl daemon-reload
+systemctl start shadowsocks-"$USERNAME"
+systemctl enable shadowsocks-"$USERNAME" &> /dev/null
+
+clear
+echo -e " Account details: "
+echo -e " SS-URI → \033[1;32m $(cat ss_client.txt)\033[0m"
+echo -e " QR code: \n"
+cat ss_client.PNG
+echo ''
+read -n 1 -s -r -p " Press any key to end"
+clear
+main-ss

@@ -1,0 +1,29 @@
+#!/bin/bash
+
+clear
+echo " What do you want to do?"
+cat << EOF
+ 1) Create shadowsocks account
+ 2) Delete shadowsocks account
+ 3) Optimize shadowsocks(experimental)
+ 4) Exit
+EOF
+unset input
+until ((input >= 1 && input <= 4)); do
+	read -rp " Choose number: " input
+done
+case $input in
+	1)
+		create-ss
+		;;
+	2)
+		delete-ss
+		;;
+	3)
+		optimize-ss
+		;;
+	4)
+		clear
+		exit
+		;;
+esac

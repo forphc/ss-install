@@ -1,0 +1,48 @@
+#!/bin/bash
+
+PS3=" Choose number: "
+SS_CONFIG_DIR="/etc/shadowsocks-libev"
+USERS=$(find "$SS_CONFIG_DIR" -name *.json | cut -d"/" -f4 | cut -d"." -f1)
+
+clear
+if [[ -z $USERS ]]; then
+	echo ''
+	echo " No existing user"
+	sleep 2
+	main-ss
+else
+	echo ""
+	echo " Which user account do you want to delete?"
+	select user in ${USERS[@]} "ALL USERS"
+	do
+		if [[ -z $user ]]; then
+			continue
+		fi
+		read -rp " Confirm delete ${user} [Y/n]: " input
+		if [[ $input =~ ^[nN]$ ]]; then
+			main-ss
+			break
+		elif [[ $user = "ALL USERS" ]]; then
+			for item in ${USERS[@]}; do
+				echo " Deleting ${item}..."
+				systemctl stop shadowsocks-"$item".service
+				rm -f /lib/systemd/system/shadowsocks-"$item".service
+				rm -f "$SS_CONFIG_DIR"/"$item".json
+			done
+			systemctl daemon-reload
+			echo " All users deleted"
+			read -n 1 -s -r -p " Press any key to exit"
+			main-ss
+			break
+		else
+			systemctl stop shadowsocks-"$user".service
+			rm -f /lib/systemd/system/shadowsocks-"$user".service
+			rm -f "$SS_CONFIG_DIR"/"$user".json
+			systemctl daemon-reload
+			echo " User ${user} deleted"
+			read -n 1 -s -r -p " Press any key to exit"
+			main-ss
+			break
+		fi
+	done
+fi
